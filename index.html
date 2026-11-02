@@ -1329,12 +1329,11 @@ async function loadPeople(){
 }
 async function loadAll(){
   await loadPeople();
-  for(const t of TABLES){
-    const {data,error} = await sb.from(t).select('id,data').limit(10000);
-    if(error) throw error;
-    S[t] = data.map(r=>normalize(t,r.data));
-    shadow[t] = new Map(S[t].map(o=>[o.id,JSON.stringify(o)]));
-  }
+  /* fetch every table at the same time (was one after another, which is slow on a new project) */
+  const res = await Promise.all(TABLES.map(t=>sb.from(t).select('id,data').limit(10000)));
+  res.forEach((r,i)=>{ if(r.error) throw r.error; const t=TABLES[i];
+    S[t] = r.data.map(x=>normalize(t,x.data));
+    shadow[t] = new Map(S[t].map(o=>[o.id,JSON.stringify(o)])); });
 }
 function applyRemote(t,p){
   const arr = S[t];
@@ -1412,6 +1411,8 @@ async function startSession(){
   render(); maybeCheckin();
 }
 async function boot(){
+  { const g=$('#gate'); g.hidden=false; g.innerHTML='<div class="gatebox signin">'+brandHTML()+'<h2>Loading…</h2><p class="hint" id="loadHint">Connecting to your class board.</p></div>';
+    setTimeout(()=>{ const h=$('#loadHint'); if(h) h.innerHTML='Still loading. A brand-new Supabase project can take a few minutes to finish starting. If this stays here, check that <b>config.js</b> has your URL and anon key and that you ran <b>1-setup.sql</b>, then refresh. (Press F12 and open Console to see any error.)'; },12000); }
   if(!window.supabase || SUPABASE_URL.startsWith('PASTE') || SUPABASE_ANON_KEY.startsWith('PASTE')){
     showGate('This board can’t find its settings. Make sure <b>config.js</b> is uploaded to the same GitHub folder as <b>index.html</b>, then refresh.'); return; }
   if(/\/rest\/v1/.test(SUPABASE_URL)){ showGate('The Supabase URL in <b>config.js</b> should end at <b>.supabase.co</b>. Remove the <b>/rest/v1</b> part.'); return; }

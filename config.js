@@ -27,6 +27,6 @@ window.JARVIS_CONFIG = {
     schoology:    false,   // Schoology sync log page
     abDays:       false,   // A/B day tags
     inspiration:  false,   // weekly Inspiration post
-    startSlide:   false    // full-screen start-of-class slide
+    startSlide:   true    // full-screen start-of-class slide
   }
 };

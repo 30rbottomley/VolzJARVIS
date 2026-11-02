@@ -1039,49 +1039,6 @@ body.scopen{overflow:hidden}
 .scshowhid{margin-top:1vh;border:0;background:none;color:#4a5a53;font:inherit;font-size:clamp(13px,1.1vw,18px);text-decoration:underline;cursor:pointer;padding:0}
 
 </style>
-
-<style id="jarvis-diagnostic-style">
-#jarvis-startup-error{display:none;position:fixed;inset:12px;z-index:999999;overflow:auto;
-  background:#fff;color:#172033;border:3px solid #c43b42;border-radius:14px;
-  padding:22px;font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
-  box-shadow:0 12px 40px rgba(0,0,0,.25)}
-#jarvis-startup-error h1{font-size:22px;margin:0 0 8px}
-#jarvis-startup-error p{max-width:75ch}
-#jarvis-startup-error pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f8;
-  padding:12px;border-radius:8px;color:#172033}
-#jarvis-startup-error button{padding:9px 14px;border:0;border-radius:8px;background:#1f3a5f;color:#fff;font:inherit}
-</style>
-<script>
-(function(){
-  function report(kind, message, file, line, column){
-    try{
-      var box=document.getElementById('jarvis-startup-error');
-      if(!box){
-        box=document.createElement('section');
-        box.id='jarvis-startup-error';
-        box.setAttribute('role','alert');
-        (document.body||document.documentElement).appendChild(box);
-      }
-      box.style.display='block';
-      var detail=[kind, message||'No error message supplied',
-        file ? 'File: '+file : '', line ? 'Line: '+line+(column?':'+column:'') : '']
-        .filter(Boolean).join('\n');
-      box.innerHTML='<h1>JARVIS could not start</h1>'+
-        '<p>The page caught a startup error. This diagnostic does not change your data or Supabase project.</p>'+
-        '<pre></pre><p>Copy this message for whoever maintains the app. Do not share passwords, PINs, or private keys.</p>'+
-        '<button type="button" onclick="location.reload()">Reload JARVIS</button>';
-      box.querySelector('pre').textContent=detail;
-    }catch(_){}
-  }
-  window.addEventListener('error',function(e){
-    report('JavaScript/resource error',e.message||'A script or resource failed',e.filename,e.lineno,e.colno);
-  });
-  window.addEventListener('unhandledrejection',function(e){
-    var r=e.reason, msg=r&&r.message?r.message:String(r||'Unhandled promise rejection');
-    report('Unhandled promise rejection',msg);
-  });
-})();
-</script>
 </head>
 <body>
 <div class="app">
@@ -1140,10 +1097,15 @@ const BRAND = (()=>{ const b=GEN_CFG.brand||{}, c=b.colors||{};
 const FEATURES = Object.assign({weeklyReport:false,checkins:false,tv:false,schoology:false,abDays:false,inspiration:false,startSlide:false}, GEN_CFG.features||{});
 const pageOn = k => { const m={tv:FEATURES.tv,inspo:FEATURES.inspiration,week:FEATURES.weeklyReport||FEATURES.checkins,sync:FEATURES.schoology}; return k in m ? !!m[k] : true; };
 const BRAND_TOK = {teacher:BRAND.teacher,class:BRAND.className||'our class',tv:BRAND.tvName,school:BRAND.school};
-function brandText(str){ if(typeof str!=='string'||str.indexOf('{{')<0) return str;
+const TOKEN_RE = /\{\{\w+\}\}/;
+function brandText(str){ if(typeof str!=='string'||!TOKEN_RE.test(str)) return str;
   return str.replace(/\{\{(\w+)\}\}/g,(m,k,off,full)=>{ const v=BRAND_TOK[k]; if(v==null) return m; const prev=full.slice(0,off).replace(/\s+$/,''); return (!prev||/[.!?:>“"]$/.test(prev))&&v ? v[0].toUpperCase()+v.slice(1) : v; }); }
-function brandNode(n){ if(n.nodeType===3){ if(n.nodeValue.indexOf('{{')>=0) n.nodeValue=brandText(n.nodeValue); }
-  else if(n.nodeType===1){ for(const a of ['title','placeholder','aria-label','value','alt']){ const v=n.getAttribute(a); if(v&&v.indexOf('{{')>=0) n.setAttribute(a,brandText(v)); } n.childNodes.forEach(brandNode); } }
+/* Only write when the text really changes, and never touch <script>/<style> (otherwise the observer re-triggers itself forever). */
+function brandNode(n){
+  if(n.nodeType===3){ const v=n.nodeValue; if(TOKEN_RE.test(v)){ const nv=brandText(v); if(nv!==v) n.nodeValue=nv; } }
+  else if(n.nodeType===1){ if(n.tagName==='SCRIPT'||n.tagName==='STYLE') return;
+    for(const a of ['title','placeholder','aria-label','value','alt']){ const v=n.getAttribute(a); if(v&&TOKEN_RE.test(v)){ const nv=brandText(v); if(nv!==v) n.setAttribute(a,nv); } }
+    n.childNodes.forEach(brandNode); } }
 new MutationObserver(ms=>{ for(const m of ms){ m.addedNodes.forEach(brandNode); if(m.type==='characterData') brandNode(m.target); } }).observe(document.documentElement,{childList:true,subtree:true,characterData:true});
 ['alert','confirm','prompt'].forEach(k=>{ const f=window[k].bind(window); window[k]=(m,...r)=>f(brandText(String(m)),...r); });
 (function(){ const d=BRAND.dark,l=BRAND.light;
@@ -1372,12 +1334,11 @@ async function loadPeople(){
 }
 async function loadAll(){
   await loadPeople();
-  for(const t of TABLES){
-    const {data,error} = await sb.from(t).select('id,data').limit(10000);
-    if(error) throw error;
-    S[t] = data.map(r=>normalize(t,r.data));
-    shadow[t] = new Map(S[t].map(o=>[o.id,JSON.stringify(o)]));
-  }
+  /* fetch every table at the same time (was one after another, which is slow on a new project) */
+  const res = await Promise.all(TABLES.map(t=>sb.from(t).select('id,data').limit(10000)));
+  res.forEach((r,i)=>{ if(r.error) throw r.error; const t=TABLES[i];
+    S[t] = r.data.map(x=>normalize(t,x.data));
+    shadow[t] = new Map(S[t].map(o=>[o.id,JSON.stringify(o)])); });
 }
 function applyRemote(t,p){
   const arr = S[t];
@@ -1455,6 +1416,8 @@ async function startSession(){
   render(); maybeCheckin();
 }
 async function boot(){
+  { const g=$('#gate'); g.hidden=false; g.innerHTML='<div class="gatebox signin">'+brandHTML()+'<h2>Loading…</h2><p class="hint" id="loadHint">Connecting to your class board.</p></div>';
+    setTimeout(()=>{ const h=$('#loadHint'); if(h) h.innerHTML='Still loading. A brand-new Supabase project can take a few minutes to finish starting. If this stays here, check that <b>config.js</b> has your URL and anon key and that you ran <b>1-setup.sql</b>, then refresh. (Press F12 and open Console to see any error.)'; },12000); }
   if(!window.supabase || SUPABASE_URL.startsWith('PASTE') || SUPABASE_ANON_KEY.startsWith('PASTE')){
     showGate('This board can’t find its settings. Make sure <b>config.js</b> is uploaded to the same GitHub folder as <b>index.html</b>, then refresh.'); return; }
   if(/\/rest\/v1/.test(SUPABASE_URL)){ showGate('The Supabase URL in <b>config.js</b> should end at <b>.supabase.co</b>. Remove the <b>/rest/v1</b> part.'); return; }
@@ -2228,8 +2191,8 @@ function renderHomeStudent(){
   const stage = stageDue(v,ws);
   const hr=new Date().getHours(); const greet = hr<12?'Good morning':hr<17?'Good afternoon':'Good evening';
   let h = `<div class="hello"><h2>${greet}, ${esc(first(v))}</h2><span class="hint">${esc(fmtDay(t))}</span></div><div class="hgrid">`+remindersCard();
-  if(!lowerMe()) h += card('Today', ci&&ci.line ? `<div class="ciline">“${esc(ci.line)}”</div><div class="checks">${(ci.active||[]).map(k=>`<span class="tag">${esc(activeLabel(k))}</span>`).join('')}</div><div class="askacts"><button class="btn tiny" data-editcheckin>Edit check-in</button><button class="btn tiny" data-page="today">Open my schedule</button></div>` : (ci&&ci.absent?'<div class="hint">You marked today as absent.</div>':`<button class="btn primary" data-editcheckin>Check in for today</button>`));
-  if(stage && !lowerMe() && stage!=='monday') h += card(stage==='mid'?'Midweek check-in is ready':'Friday reflection is ready', `<p class="hint">${stage==='mid'?'Two quick questions about how your week is going.':'Wrap up your week. Your daily check-ins are there to help you remember.'}</p><button class="btn primary" data-page="week">Open My week</button>`);
+  if(FEATURES.checkins && !lowerMe()) h += card('Today', ci&&ci.line ? `<div class="ciline">“${esc(ci.line)}”</div><div class="checks">${(ci.active||[]).map(k=>`<span class="tag">${esc(activeLabel(k))}</span>`).join('')}</div><div class="askacts"><button class="btn tiny" data-editcheckin>Edit check-in</button><button class="btn tiny" data-page="today">Open my schedule</button></div>` : (ci&&ci.absent?'<div class="hint">You marked today as absent.</div>':`<button class="btn primary" data-editcheckin>Check in for today</button>`));
+  if(stage && (FEATURES.weeklyReport||FEATURES.checkins) && !lowerMe() && stage!=='monday') h += card(stage==='mid'?'Midweek check-in is ready':'Friday reflection is ready', `<p class="hint">${stage==='mid'?'Two quick questions about how your week is going.':'Wrap up your week. Your daily check-ins are there to help you remember.'}</p><button class="btn primary" data-page="week">Open My week</button>`);
   h += card('Due soon', due.length?due.map(miniRow).join(''):'<div class="hint">Nothing due in the next few days.</div>', `<button class="linkbtn" data-page="board">Board</button>`);
   if(changes.length) h += card('Needs changes', changes.map(miniRow).join(''));
   if(waiting.length) h += card('Waiting on you', waiting.map(a=>askCardHTML(a,{showTarget:true})).join(''));
@@ -2331,17 +2294,17 @@ function renderHomeTeacher(){
   const roster = UI.homeGrade ? STUDENTS.filter(s=>s.grad===+UI.homeGrade) : UPPER;
   const rows = roster.map(s=>{ const ci=checkin(s.id,t); const classDay=isClassDay(s.id,t);
     const status = ci&&ci.absent ? '<span class="tag">Absent</span>' : ci&&ci.line ? `<span class="tag ok">${esc(new Date(ci.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}))}</span>` : (classDay?'<span class="tag chg">Not yet</span>':'<span class="hint">No class</span>');
-    return `<tr class="row" data-openweek="${s.id}|${weekStartOf(t)}"><td class="c-item"><div class="cell-item">${av(s.id)}<b>${nameTag(s.id)}</b>${remindBtn('s:'+s.id,'mini')}<button class="linkbtn small" data-editprofile="${s.id}" title="Edit profile">Profile</button></div></td><td class="small">${gradLabel(s.grad)}</td><td>${status}</td><td class="small wrap">${ci&&ci.active?(ci.active.map(k=>esc(activeLabel(k))).join(', ')):''}</td><td class="small wrap">${ci&&ci.line?esc(ci.line):''}</td></tr>`; }).join('');
+    return `<tr class="row" ${(FEATURES.checkins||FEATURES.weeklyReport)?`data-openweek="${s.id}|${weekStartOf(t)}"`:''}><td class="c-item"><div class="cell-item">${av(s.id)}<b>${nameTag(s.id)}</b>${remindBtn('s:'+s.id,'mini')}<button class="linkbtn small" data-editprofile="${s.id}" title="Edit profile">Profile</button></div></td><td class="small">${gradLabel(s.grad)}</td>${FEATURES.checkins?`<td>${status}</td><td class="small wrap">${ci&&ci.active?(ci.active.map(k=>esc(activeLabel(k))).join(', ')):''}</td><td class="small wrap">${ci&&ci.line?esc(ci.line):''}</td>`:''}</tr>`; }).join('');
   const inN = roster.filter(s=>{const c=checkin(s.id,t); return c&&c.line;}).length, absN=roster.filter(s=>checkin(s.id,t)?.absent).length;
   const review = S.items.filter(i=>i.source==='assignment'&&i.status==='sub').length;
   const help = S.asks.filter(a=>a.open&&a.kind==='help').length, lreq = S.asks.filter(a=>a.open&&a.kind==='lesson').length;
   const lessons = S.lessons.filter(l=>l.date===t);
   let h = `<div class="hello"><h2>Class today</h2><span class="hint">${esc(fmtDay(t))}</span><span class="grow"></span><button class="btn primary" data-startclass>▶ Start of class</button></div>
-    <div class="stats"><div><b>${inN}/${roster.length}</b><span>checked in</span></div><div><b>${absN}</b><span>absent</span></div>
+    <div class="stats">${FEATURES.checkins?`<div><b>${inN}/${roster.length}</b><span>checked in</span></div><div><b>${absN}</b><span>absent</span></div>`:''}
       <button data-gotoreview><b>${review}</b><span>to review</span></button><button data-page="asks"><b>${help}</b><span>open asks</span></button><button data-page="lessons"><b>${lreq}</b><span>lesson requests</span></button></div>
     <div class="hgrid" style="margin-top:12px">${remindersCard()}${myListCard()}</div>
-    <div class="filters" style="margin:10px 0 8px">${['',...GRADES_ON.filter(g=>STUDENTS.some(s=>s.grad===g.year)).map(g=>String(g.year))].map(g=>`<button class="chip ${UI.homeGrade===g?'on':''}" data-homegrade="${g}">${g===''?'Everyone':gradPlural(+g)}</button>`).join('')}<span class="hint">Click a student to open their week.</span></div>
-    <div class="tablewrap" style="--g:var(--accent)"><table class="roster"><thead><tr><th class="c-item">Student</th><th>Grade</th><th>Check-in</th><th>Working on</th><th>Today’s line</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <div class="filters" style="margin:10px 0 8px">${['',...GRADES_ON.filter(g=>STUDENTS.some(s=>s.grad===g.year)).map(g=>String(g.year))].map(g=>`<button class="chip ${UI.homeGrade===g?'on':''}" data-homegrade="${g}">${g===''?'Everyone':gradPlural(+g)}</button>`).join('')}${(FEATURES.checkins||FEATURES.weeklyReport)?'<span class="hint">Click a student to open their week.</span>':''}</div>
+    <div class="tablewrap" style="--g:var(--accent)"><table class="roster"><thead><tr><th class="c-item">Student</th><th>Grade</th>${FEATURES.checkins?'<th>Check-in</th><th>Working on</th><th>Today’s line</th>':''}</tr></thead><tbody>${rows}</tbody></table></div>`;
   const pendCard = pendingPictures().length ? card('Pictures to approve', pendingPicRows()) : '';
   if(lessons.length || pendCard) h += `<div class="hgrid" style="margin-top:16px">${pendCard}${lessons.length?card('Lessons today', lessons.map(lessonMini).join('')):''}</div>`;
   return h;
